@@ -3,6 +3,7 @@ from django.conf import settings
 from django.db import models
 from branches.models import Branch
 from decimal import Decimal
+from django.core.exceptions import ValidationError
 from django.db.models import Sum, Q
 
 
@@ -236,6 +237,7 @@ class CreditLedgerEntry(models.Model):
         )
 
 
+
 class CreditPaymentAllocation(models.Model):
 
     payment_entry = models.ForeignKey(
@@ -275,6 +277,101 @@ class CreditPaymentAllocation(models.Model):
                 name='credit_allocation_amount_positive'
             )
         ]
+
+    def clean(self):
+        super().clean()
+
+        if not self.payment_entry_id or not self.charge_entry_id:
+            return
+
+        if self.amount is None:
+            raise ValidationError({
+                'amount': 'Allocation amount is required.'
+            })
+
+        if self.amount <= Decimal('0.00'):
+            raise ValidationError({
+                'amount': 'Allocation amount must be greater than zero.'
+            })
+
+        if self.amount.as_tuple().exponent < -2:
+            raise ValidationError({
+                'amount': 'Allocation cannot have more than two decimal places.'
+            })
+
+        payment = CreditLedgerEntry.objects.get(
+            pk=self.payment_entry_id
+        )
+
+        charge = CreditLedgerEntry.objects.get(
+            pk=self.charge_entry_id
+        )
+
+        if payment.entry_type != CreditLedgerEntry.EntryType.PAYMENT:
+            raise ValidationError({
+                'payment_entry': 'The selected entry must be a payment.'
+            })
+
+        if charge.entry_type != CreditLedgerEntry.EntryType.CHARGE:
+            raise ValidationError({
+                'charge_entry': 'The selected entry must be a charge.'
+            })
+
+        if payment.account_id != charge.account_id:
+            raise ValidationError(
+                'Payment and charge must belong to the same credit account.'
+            )
+
+        if self.amount > payment.amount:
+            raise ValidationError({
+                'amount': 'Allocation cannot exceed the payment amount.'
+            })
+
+        existing_charge_allocations = (
+            CreditPaymentAllocation.objects
+            .filter(charge_entry_id=self.charge_entry_id)
+            .exclude(pk=self.pk)
+        )
+
+        charge_allocated = (
+            existing_charge_allocations.aggregate(
+                total=Sum('amount')
+            )['total']
+            or Decimal('0.00')
+        )
+
+        if charge_allocated + self.amount > charge.amount:
+            raise ValidationError({
+                'amount': 'Allocation exceeds the outstanding charge balance.'
+            })
+
+        existing_payment_allocations = (
+            CreditPaymentAllocation.objects
+            .filter(payment_entry_id=self.payment_entry_id)
+            .exclude(pk=self.pk)
+        )
+
+        payment_allocated = (
+            existing_payment_allocations.aggregate(
+                total=Sum('amount')
+            )['total']
+            or Decimal('0.00')
+        )
+
+        if payment_allocated + self.amount > payment.amount:
+            raise ValidationError({
+                'amount': 'Total allocations exceed the payment amount.'
+            })
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError(
+            'Credit payment allocations cannot be deleted. '
+            'Use an authorized reversal process instead.'
+        )
 
     def __str__(self):
         return (

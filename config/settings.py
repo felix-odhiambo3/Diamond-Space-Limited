@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     'services',
     'vehicles',
     'visits',
+    'attendance.apps.AttendanceConfig',
 ]
 
 MIDDLEWARE = [
