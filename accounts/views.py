@@ -1,29 +1,21 @@
-from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework import status
-
-from rest_framework_simplejwt.views import TokenObtainPairView
-from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.exceptions import TokenError
-
-from .serializers import CustomTokenObtainPairSerializer
-from .permissions import IsOwner
-
 from django.contrib.auth import get_user_model
 
-from rest_framework import generics
-from rest_framework.views import APIView
+from rest_framework import generics, status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework.views import APIView
 
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
+
+from .permissions import IsAdminOrOwner, IsOwner
 from .serializers import (
+    CustomTokenObtainPairSerializer,
     UserCreateSerializer,
     UserUpdateSerializer,
     UserListSerializer,
 )
-
-from .permissions import IsAdmin
 
 User = get_user_model()
 
@@ -66,6 +58,7 @@ class LogoutView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+
 class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -81,20 +74,35 @@ class MeView(APIView):
             'role': user.role,
         })
 
+
 class OwnerTestView(APIView):
     permission_classes = [IsOwner]
 
     def get(self, request):
         return Response({
             'message': 'Access granted. You are an Owner.',
-            'role': request.user.role
+            'role': request.user.role,
         })
 
 
 class UserListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAdminOrOwner]
 
-    queryset = User.objects.all().order_by('-date_joined')
-    permission_classes = [IsAdmin]
+    def get_queryset(self):
+        queryset = User.objects.all().order_by('-date_joined')
+
+        # Admins cannot view Owner or superuser accounts.
+        if (
+            not self.request.user.is_superuser
+            and self.request.user.role != User.Role.OWNER
+        ):
+            queryset = queryset.exclude(
+                role=User.Role.OWNER
+            ).exclude(
+                is_superuser=True
+            )
+
+        return queryset
 
     def get_serializer_class(self):
         if self.request.method == 'POST':
@@ -102,21 +110,46 @@ class UserListCreateView(generics.ListCreateAPIView):
 
         return UserListSerializer
 
-class UserDetailView(generics.RetrieveUpdateAPIView):
 
-    queryset = User.objects.all()
-    permission_classes = [IsAdmin]
+class UserDetailView(generics.RetrieveUpdateAPIView):
+    permission_classes = [IsAdminOrOwner]
     serializer_class = UserUpdateSerializer
+
+    def get_queryset(self):
+        queryset = User.objects.all()
+
+        # Admins cannot retrieve or modify Owner or superuser accounts.
+        if (
+            not self.request.user.is_superuser
+            and self.request.user.role != User.Role.OWNER
+        ):
+            queryset = queryset.exclude(
+                role=User.Role.OWNER
+            ).exclude(
+                is_superuser=True
+            )
+
+        return queryset
 
 
 class UserDeactivateView(APIView):
-
-    permission_classes = [IsAdmin]
+    permission_classes = [IsAdminOrOwner]
 
     def patch(self, request, pk):
+        queryset = User.objects.all()
+
+        if (
+            not request.user.is_superuser
+            and request.user.role != User.Role.OWNER
+        ):
+            queryset = queryset.exclude(
+                role=User.Role.OWNER
+            ).exclude(
+                is_superuser=True
+            )
 
         try:
-            user = User.objects.get(pk=pk)
+            user = queryset.get(pk=pk)
         except User.DoesNotExist:
             return Response(
                 {'error': 'User not found.'},
@@ -127,12 +160,6 @@ class UserDeactivateView(APIView):
             return Response(
                 {'error': 'You cannot deactivate your own account.'},
                 status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if user.is_superuser and not request.user.is_superuser:
-            return Response(
-                {'error': 'Only a superuser can deactivate this account.'},
-                status=status.HTTP_403_FORBIDDEN
             )
 
         user.is_active = False

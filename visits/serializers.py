@@ -1,9 +1,8 @@
 
 from rest_framework import serializers
 
-from .models import Visit
+from .models import Visit, VisitService, ServiceAssignment
 from vehicles.models import Vehicle
-from .models import ServiceAssignment
 from staff.models import StaffProfile
 
 
@@ -52,13 +51,37 @@ class VisitSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
 
+        
     def validate_vehicle(self, vehicle):
+        from rest_framework.exceptions import PermissionDenied
+
+        request = self.context['request']
+        user = request.user
+
+        # Inactive vehicles cannot be checked in.
         if not vehicle.is_active:
             raise serializers.ValidationError(
                 "This vehicle is inactive and cannot be checked in."
             )
 
+        # Admin, Owner and superusers can check in vehicles at any branch.
+        if user.is_superuser or user.role in ['ADMIN', 'OWNER']:
+            return vehicle
+
+        # Other users must have a staff profile.
+        if not hasattr(user, 'staff_profile'):
+            raise PermissionDenied(
+                "Your account is not assigned to a branch."
+            )
+
+        # Staff can only check in vehicles belonging to their branch.
+        if user.staff_profile.branch_id != vehicle.branch_id:
+            raise PermissionDenied(
+                "You can only check in vehicles at your assigned branch."
+            )
+
         return vehicle
+
 
     def create(self, validated_data):
         request = self.context['request']
@@ -70,17 +93,16 @@ class VisitSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-from .models import VisitService
-
-
 class VisitServiceSerializer(serializers.ModelSerializer):
     service_name = serializers.CharField(read_only=True)
     service_code = serializers.CharField(read_only=True)
+
     original_price = serializers.DecimalField(
         max_digits=10,
         decimal_places=2,
         read_only=True
     )
+
     added_by_name = serializers.CharField(
         source='added_by.get_full_name',
         read_only=True
@@ -123,6 +145,7 @@ class VisitServiceSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "This service is currently inactive."
             )
+
         return service
 
     def create(self, validated_data):
@@ -141,6 +164,7 @@ class VisitServiceSerializer(serializers.ModelSerializer):
             requires_timer=service.requires_timer,
             added_by=request.user,
         )
+
 
 class ServiceAssignmentSerializer(serializers.ModelSerializer):
     staff_number = serializers.CharField(
@@ -185,6 +209,7 @@ class ServiceAssignmentSerializer(serializers.ModelSerializer):
             'removed_by',
             'removal_reason',
         ]
+
 
 class ServiceAssignmentRemovalSerializer(serializers.Serializer):
     removal_reason = serializers.CharField(

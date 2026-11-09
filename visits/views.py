@@ -1,30 +1,22 @@
 
-from rest_framework import generics
-from rest_framework.permissions import IsAuthenticated
-
-from .models import Visit
-from .serializers import VisitSerializer
-from accounts.permissions import (
-    IsAdmin,
-    IsSupervisor,
-    IsDetailer,
-)
-
-from rest_framework.exceptions import ValidationError
-from .models import VisitService
-from .serializers import VisitServiceSerializer
-from services.models import Service
-from staff.models import StaffProfile
-
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
+
+from rest_framework import generics, status
+from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .serializers import ServiceAssignmentRemovalSerializer
+from accounts.permissions import IsAdmin, IsSupervisor, IsDetailer
 
-from django.shortcuts import get_object_or_404
+from .models import Visit, VisitService, ServiceAssignment
+from .serializers import (
+    VisitSerializer,
+    VisitServiceSerializer,
+    ServiceAssignmentSerializer,
+    ServiceAssignmentRemovalSerializer,
+)
 
-from .models import ServiceAssignment
-from .serializers import ServiceAssignmentSerializer
 
 class VisitListCreateView(generics.ListCreateAPIView):
     serializer_class = VisitSerializer
@@ -36,16 +28,12 @@ class VisitListCreateView(generics.ListCreateAPIView):
         queryset = Visit.objects.select_related(
             'vehicle',
             'branch',
-            'checked_in_by'
-        ).all()
+            'checked_in_by',
+        )
 
-        if user.role == 'ADMIN' or user.is_superuser:
-            return queryset
+        if user.is_superuser or user.role in ['ADMIN', 'OWNER']:
+            return queryset.all()
 
-        if user.role == 'OWNER':
-            return queryset
-
-        # Other staff initially see visits from their assigned branch.
         if hasattr(user, 'staff_profile'):
             return queryset.filter(
                 branch=user.staff_profile.branch
@@ -57,7 +45,7 @@ class VisitListCreateView(generics.ListCreateAPIView):
         if self.request.method == 'POST':
             return [
                 IsAuthenticated(),
-                (IsAdmin | IsSupervisor | IsDetailer)()
+                (IsAdmin | IsSupervisor | IsDetailer)(),
             ]
 
         return super().get_permissions()
@@ -73,10 +61,10 @@ class VisitDetailView(generics.RetrieveAPIView):
         queryset = Visit.objects.select_related(
             'vehicle',
             'branch',
-            'checked_in_by'
+            'checked_in_by',
         )
 
-        if user.role in ['ADMIN', 'OWNER'] or user.is_superuser:
+        if user.is_superuser or user.role in ['ADMIN', 'OWNER']:
             return queryset.all()
 
         if hasattr(user, 'staff_profile'):
@@ -92,33 +80,38 @@ class VisitServiceListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_visit(self):
-        return generics.get_object_or_404(
-            Visit,
-            pk=self.kwargs['visit_id']
+        user = self.request.user
+
+        queryset = Visit.objects.all()
+
+        if not user.is_superuser and user.role not in ['ADMIN', 'OWNER']:
+            if not hasattr(user, 'staff_profile'):
+                queryset = queryset.none()
+            else:
+                queryset = queryset.filter(
+                    branch=user.staff_profile.branch
+                )
+
+        return get_object_or_404(
+            queryset,
+            pk=self.kwargs['visit_id'],
         )
 
     def get_queryset(self):
         visit = self.get_visit()
-        user = self.request.user
 
-        queryset = VisitService.objects.filter(
+        return VisitService.objects.filter(
             visit=visit
-        ).select_related('service', 'added_by')
-
-        if user.role in ['ADMIN', 'OWNER'] or user.is_superuser:
-            return queryset
-
-        if hasattr(user, 'staff_profile'):
-            if user.staff_profile.branch_id == visit.branch_id:
-                return queryset
-
-        return queryset.none()
+        ).select_related(
+            'service',
+            'added_by',
+        )
 
     def get_permissions(self):
         if self.request.method == 'POST':
             return [
                 IsAuthenticated(),
-                (IsAdmin | IsSupervisor | IsDetailer)()
+                (IsAdmin | IsSupervisor | IsDetailer)(),
             ]
 
         return super().get_permissions()
@@ -133,13 +126,14 @@ class VisitServiceListCreateView(generics.ListCreateAPIView):
 
         if visit.status in [
             Visit.Status.COMPLETED,
-            Visit.Status.CANCELLED
+            Visit.Status.CANCELLED,
         ]:
             raise ValidationError(
                 "Services cannot be added to a completed or cancelled visit."
             )
 
         serializer.save()
+
 
 class ServiceAssignmentListCreateView(generics.ListCreateAPIView):
     serializer_class = ServiceAssignmentSerializer
@@ -150,23 +144,21 @@ class ServiceAssignmentListCreateView(generics.ListCreateAPIView):
 
         queryset = VisitService.objects.select_related(
             'visit',
-            'service'
+            'service',
         ).filter(
-            visit_id=self.kwargs['visit_id']
+            visit_id=self.kwargs['visit_id'],
+            pk=self.kwargs['visit_service_id'],
         )
 
-        if user.role not in ['ADMIN', 'OWNER'] and not user.is_superuser:
-            if hasattr(user, 'staff_profile'):
+        if not user.is_superuser and user.role not in ['ADMIN', 'OWNER']:
+            if not hasattr(user, 'staff_profile'):
+                queryset = queryset.none()
+            else:
                 queryset = queryset.filter(
                     visit__branch=user.staff_profile.branch
                 )
-            else:
-                queryset = queryset.none()
 
-        return get_object_or_404(
-            queryset,
-            pk=self.kwargs['visit_service_id']
-        )
+        return get_object_or_404(queryset)
 
     def get_queryset(self):
         visit_service = self.get_visit_service()
@@ -174,15 +166,17 @@ class ServiceAssignmentListCreateView(generics.ListCreateAPIView):
         return ServiceAssignment.objects.filter(
             visit_service=visit_service
         ).select_related(
+            'staff',
             'staff__user',
-            'assigned_by'
+            'assigned_by',
+            'removed_by',
         )
 
     def get_permissions(self):
         if self.request.method == 'POST':
             return [
                 IsAuthenticated(),
-                (IsAdmin | IsSupervisor)()
+                (IsAdmin | IsSupervisor)(),
             ]
 
         return super().get_permissions()
@@ -191,18 +185,21 @@ class ServiceAssignmentListCreateView(generics.ListCreateAPIView):
         visit_service = self.get_visit_service()
         visit = visit_service.visit
         staff = serializer.validated_data['staff']
+        user = self.request.user
 
+        # Do not assign staff to a closed visit.
         if visit.status in [
             Visit.Status.COMPLETED,
-            Visit.Status.CANCELLED
+            Visit.Status.CANCELLED,
         ]:
             raise ValidationError(
-                "Cannot assign staff to a completed or cancelled visit."
+                "Staff cannot be assigned to a completed or cancelled visit."
             )
 
-        if staff.employment_status != StaffProfile.EmploymentStatus.ACTIVE:
+        # Ensure the staff member is currently employed.
+        if staff.employment_status != staff.EmploymentStatus.ACTIVE:
             raise ValidationError(
-                "This staff member is not currently active."
+                "Inactive or suspended staff cannot be assigned."
             )
 
         if not staff.user.is_active:
@@ -210,33 +207,44 @@ class ServiceAssignmentListCreateView(generics.ListCreateAPIView):
                 "This staff member's user account is inactive."
             )
 
+        # Staff must belong to the same branch as the visit.
         if staff.branch_id != visit.branch_id:
             raise ValidationError(
-                "Staff can only be assigned to services at their own branch."
+                "Staff can only be assigned to visits at their own branch."
             )
 
-        if visit_service.service_category == 'DETAILING':
+        # Car wash services require cleaners.
+        # Detailing services require detailers.
+        if visit_service.service_category == 'CAR_WASH':
+            expected_role = 'CLEANER'
+        elif visit_service.service_category == 'DETAILING':
             expected_role = 'DETAILER'
         else:
-            expected_role = 'CLEANER'
+            raise ValidationError(
+                "The service category does not support staff assignment."
+            )
 
         if staff.user.role != expected_role:
             raise ValidationError(
-                f"Only {expected_role.lower()} staff can be assigned to this service."
+                f"Only staff with the {expected_role} role can be assigned "
+                f"to this service."
             )
 
-        if ServiceAssignment.objects.filter(
+        # Prevent duplicate active assignments.
+        already_assigned = ServiceAssignment.objects.filter(
             visit_service=visit_service,
             staff=staff,
-            is_active=True
-        ).exists():
+            is_active=True,
+        ).exists()
+
+        if already_assigned:
             raise ValidationError(
                 "This staff member is already assigned to this service."
             )
 
         serializer.save(
             visit_service=visit_service,
-            assigned_by=self.request.user
+            assigned_by=user,
         )
 
 
@@ -247,43 +255,49 @@ class ServiceAssignmentRemoveView(generics.GenericAPIView):
     def get_permissions(self):
         return [
             IsAuthenticated(),
-            (IsAdmin | IsSupervisor)()
+            (IsAdmin | IsSupervisor)(),
         ]
 
     def post(self, request, visit_id, visit_service_id, assignment_id):
-        visit_service = get_object_or_404(
-            VisitService.objects.select_related('visit'),
-            pk=visit_service_id,
-            visit_id=visit_id
-        )
-
         user = request.user
 
-        if not user.is_superuser and user.role != 'ADMIN':
+        queryset = VisitService.objects.select_related(
+            'visit'
+        ).filter(
+            pk=visit_service_id,
+            visit_id=visit_id,
+        )
+
+        # Restrict supervisors to their own branch.
+        if not user.is_superuser and user.role not in ['ADMIN', 'OWNER']:
             if not hasattr(user, 'staff_profile'):
                 raise ValidationError(
                     "You do not have permission to remove this assignment."
                 )
 
-            if user.staff_profile.branch_id != visit_service.visit.branch_id:
-                raise ValidationError(
-                    "You can only remove assignments at your own branch."
-                )
+            queryset = queryset.filter(
+                visit__branch=user.staff_profile.branch
+            )
+
+        visit_service = get_object_or_404(queryset)
 
         assignment = get_object_or_404(
             ServiceAssignment,
             pk=assignment_id,
             visit_service=visit_service,
-            is_active=True
+            is_active=True,
         )
 
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        # Soft removal preserves the assignment history.
         assignment.is_active = False
         assignment.removed_at = timezone.now()
         assignment.removed_by = user
-        assignment.removal_reason = serializer.validated_data['removal_reason']
+        assignment.removal_reason = serializer.validated_data[
+            'removal_reason'
+        ]
 
         assignment.save(update_fields=[
             'is_active',
@@ -294,5 +308,5 @@ class ServiceAssignmentRemoveView(generics.GenericAPIView):
 
         return Response(
             ServiceAssignmentSerializer(assignment).data,
-            status=200
+            status=status.HTTP_200_OK,
         )
