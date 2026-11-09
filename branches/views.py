@@ -3,18 +3,16 @@ from rest_framework.permissions import IsAuthenticated
 
 from .models import Branch
 from .serializers import BranchSerializer
-from accounts.permissions import IsAdmin
+from accounts.permissions import IsAdminOrOwner
 
 
 class BranchListCreateView(generics.ListCreateAPIView):
-
     queryset = Branch.objects.all()
     serializer_class = BranchSerializer
-    permission_classes = [IsAuthenticated, IsAdmin]
+    permission_classes = [IsAuthenticated, IsAdminOrOwner]
 
 
 class BranchDetailView(generics.RetrieveUpdateAPIView):
-
     queryset = Branch.objects.all()
     serializer_class = BranchSerializer
-    permission_classes = [IsAuthenticated, IsAdmin]
+    permission_classes = [IsAuthenticated, IsAdminOrOwner]
