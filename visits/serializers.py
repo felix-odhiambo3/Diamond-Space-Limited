@@ -1,9 +1,10 @@
 
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 
 from .models import Visit, VisitService, ServiceAssignment
+from branches.models import Branch
 from vehicles.models import Vehicle
-from staff.models import StaffProfile
 
 
 class VisitSerializer(serializers.ModelSerializer):
@@ -12,14 +13,41 @@ class VisitSerializer(serializers.ModelSerializer):
         read_only=True
     )
 
+    vehicle_make_model = serializers.CharField(
+        source='vehicle.make_model',
+        read_only=True
+    )
+
+    vehicle_category = serializers.CharField(
+        source='vehicle.category.name',
+        read_only=True
+    )
+
     checked_in_by_name = serializers.CharField(
         source='checked_in_by.get_full_name',
         read_only=True
     )
 
+    branch = serializers.PrimaryKeyRelatedField(
+        queryset=Branch.objects.filter(is_active=True),
+        required=False
+    )
+
     branch_name = serializers.CharField(
         source='branch.name',
         read_only=True
+    )
+
+    plastic_mat_count = serializers.IntegerField(
+        min_value=0,
+        required=False,
+        default=0
+    )
+
+    woolen_mat_count = serializers.IntegerField(
+        min_value=0,
+        required=False,
+        default=0
     )
 
     class Meta:
@@ -28,6 +56,8 @@ class VisitSerializer(serializers.ModelSerializer):
             'id',
             'vehicle',
             'vehicle_registration',
+            'vehicle_make_model',
+            'vehicle_category',
             'branch',
             'branch_name',
             'checked_in_by',
@@ -35,14 +65,15 @@ class VisitSerializer(serializers.ModelSerializer):
             'status',
             'arrival_time',
             'completed_at',
-            'notes',
+            'plastic_mat_count',
+            'woolen_mat_count',
+            'comment',
             'created_at',
             'updated_at',
         ]
 
         read_only_fields = [
             'id',
-            'branch',
             'checked_in_by',
             'status',
             'arrival_time',
@@ -51,45 +82,67 @@ class VisitSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
 
-        
     def validate_vehicle(self, vehicle):
-        from rest_framework.exceptions import PermissionDenied
-
-        request = self.context['request']
-        user = request.user
-
-        # Inactive vehicles cannot be checked in.
         if not vehicle.is_active:
             raise serializers.ValidationError(
                 "This vehicle is inactive and cannot be checked in."
             )
 
-        # Admin, Owner and superusers can check in vehicles at any branch.
-        if user.is_superuser or user.role in ['ADMIN', 'OWNER']:
-            return vehicle
+        return vehicle
 
-        # Other users must have a staff profile.
+    def validate(self, attrs):
+        request = self.context['request']
+        user = request.user
+
+        selected_branch = attrs.get('branch')
+
+        # Administrators and Owners may select an active
+        # servicing branch.
+        if user.is_superuser or user.role in ['ADMIN', 'OWNER']:
+            if selected_branch is None:
+                raise serializers.ValidationError({
+                    'branch': (
+                        'Select the branch where the vehicle '
+                        'will actually be serviced.'
+                    )
+                })
+
+            return attrs
+
+        # Other permitted users must have a staff profile.
         if not hasattr(user, 'staff_profile'):
             raise PermissionDenied(
                 "Your account is not assigned to a branch."
             )
 
-        # Staff can only check in vehicles belonging to their branch.
-        if user.staff_profile.branch_id != vehicle.branch_id:
+        assigned_branch = user.staff_profile.branch
+
+        if not assigned_branch.is_active:
             raise PermissionDenied(
-                "You can only check in vehicles at your assigned branch."
+                "Your assigned branch is inactive."
             )
 
-        return vehicle
+        # Prevent staff from selecting another branch.
+        if (
+            selected_branch is not None
+            and selected_branch.pk != assigned_branch.pk
+        ):
+            raise PermissionDenied(
+                "You can only create visits at your assigned branch."
+            )
 
+        # Automatically use the employee's assigned branch.
+        attrs['branch'] = assigned_branch
+
+        return attrs
 
     def create(self, validated_data):
         request = self.context['request']
-        vehicle = validated_data['vehicle']
 
         validated_data['checked_in_by'] = request.user
-        validated_data['branch'] = vehicle.branch
 
+        # The branch comes from validated servicing-branch
+        # selection, never from Vehicle.branch.
         return super().create(validated_data)
 
 

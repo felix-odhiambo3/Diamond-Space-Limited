@@ -4,6 +4,7 @@ from django.urls import path
 from .views import (
     CustomerListCreateView,
     CustomerDetailView,
+    VehicleCategoryListCreateView,
     VehicleListCreateView,
     VehicleDetailView,
     CreditAccountListCreateView,
@@ -27,6 +28,14 @@ urlpatterns = [
         'customers/<int:pk>/',
         CustomerDetailView.as_view(),
         name='customer_detail'
+    ),
+
+    # Vehicle categories
+    # Keep this before the general vehicle routes.
+    path(
+        'categories/',
+        VehicleCategoryListCreateView.as_view(),
+        name='vehicle_category_list_create'
     ),
 
     # Vehicles
@@ -67,7 +76,8 @@ urlpatterns = [
         CreditAccountCloseView.as_view(),
         name='credit_account_close'
     ),
-        # Credit ledger and repayments
+
+    # Credit ledger and repayments
     path(
         'credit-accounts/<int:pk>/ledger/',
         CreditAccountLedgerView.as_view(),

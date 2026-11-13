@@ -1,10 +1,12 @@
 
-from django.conf import settings
-from django.db import models
-from branches.models import Branch
 from decimal import Decimal
+
+from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.db import models
 from django.db.models import Sum, Q
+
+from branches.models import Branch
 
 
 class Customer(models.Model):
@@ -22,6 +24,20 @@ class Customer(models.Model):
         return self.full_name
 
 
+class VehicleCategory(models.Model):
+    name = models.CharField(max_length=80, unique=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name_plural = 'Vehicle categories'
+
+    def __str__(self):
+        return self.name
+
+
 class Vehicle(models.Model):
 
     class VehicleType(models.TextChoices):
@@ -34,9 +50,24 @@ class Vehicle(models.Model):
         OTHER = 'OTHER', 'Other'
 
     registration_number = models.CharField(max_length=20, unique=True)
+
+    # Retained temporarily for compatibility with existing records
+    # and API clients. New registrations derive this from category.
     vehicle_type = models.CharField(
         max_length=20,
         choices=VehicleType.choices
+    )
+
+    make_model = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Vehicle make and model, for example Toyota or Nissan."
+    )
+
+    category = models.ForeignKey(
+        VehicleCategory,
+        on_delete=models.PROTECT,
+        related_name='vehicles'
     )
 
     customer = models.ForeignKey(
@@ -47,6 +78,8 @@ class Vehicle(models.Model):
         blank=True
     )
 
+    # The branch where the vehicle was first registered.
+    # This is not necessarily the branch servicing a visit.
     branch = models.ForeignKey(
         Branch,
         on_delete=models.PROTECT,
@@ -74,6 +107,18 @@ class Vehicle(models.Model):
 
     class Meta:
         ordering = ['registration_number']
+
+    def save(self, *args, **kwargs):
+        self.registration_number = ''.join(
+            (self.registration_number or '').split()
+        ).upper()
+
+        if not self.registration_number:
+            raise ValidationError({
+                'registration_number': 'Vehicle registration number is required.'
+            })
+
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.registration_number
@@ -166,7 +211,6 @@ class CreditAccount(models.Model):
         return f"{self.account_number} - {self.customer.full_name}"
 
 
-
 class CreditLedgerEntry(models.Model):
 
     class EntryType(models.TextChoices):
@@ -235,7 +279,6 @@ class CreditLedgerEntry(models.Model):
             f"{self.account.account_number} - "
             f"{self.entry_type} - KES {self.amount}"
         )
-
 
 
 class CreditPaymentAllocation(models.Model):

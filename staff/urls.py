@@ -1,14 +1,36 @@
+
 from django.urls import path
-from .views import StaffShiftChangeView
 
 from .views import (
     StaffListCreateView,
     StaffDetailView,
     StaffShiftHistoryView,
+    StaffShiftChangeView,
+    StaffStatusActionView,
+    StaffStatusHistoryView,
+    StaffSelfProfileView,
+    StaffBranchPickerView,
 )
 
+
 urlpatterns = [
-    path('', StaffListCreateView.as_view(), name='staff_list_create'),
+    path(
+        'me/',
+        StaffSelfProfileView.as_view(),
+        name='staff_self_profile'
+    ),
+
+    path(
+        'branch-picker/',
+        StaffBranchPickerView.as_view(),
+        name='staff_branch_picker'
+    ),
+
+    path(
+        '',
+        StaffListCreateView.as_view(),
+        name='staff_list_create'
+    ),
 
     path(
         '<int:pk>/',
@@ -23,9 +45,20 @@ urlpatterns = [
     ),
 
     path(
-    '<int:staff_id>/shifts/change/',
-    StaffShiftChangeView.as_view(),
-    name='staff_shift_change'
-),
+        '<int:staff_id>/shifts/change/',
+        StaffShiftChangeView.as_view(),
+        name='staff_shift_change'
+    ),
 
+    path(
+        '<int:staff_id>/status/',
+        StaffStatusActionView.as_view(),
+        name='staff_status_action'
+    ),
+
+    path(
+        '<int:staff_id>/status-history/',
+        StaffStatusHistoryView.as_view(),
+        name='staff_status_history'
+    ),
 ]

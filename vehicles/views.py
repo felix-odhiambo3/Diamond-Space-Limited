@@ -1,8 +1,10 @@
 
 from django.db import transaction
+from django.db.models import Q, Value
+from django.db.models.functions import Replace
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from .services import record_credit_payment, CreditLedgerError
+
 from rest_framework import generics, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -11,24 +13,31 @@ from rest_framework.views import APIView
 from .models import (
     Customer,
     Vehicle,
+    VehicleCategory,
     CreditAccount,
     CreditLedgerEntry,
     CreditPaymentAllocation,
 )
+
 from .serializers import (
     CustomerSerializer,
     VehicleSerializer,
+    VehicleCategorySerializer,
     CreditAccountSerializer,
     CreditLedgerEntrySerializer,
     CreditPaymentCreateSerializer,
     CreditPaymentAllocationSerializer,
 )
+
 from .permissions import (
     CustomerAccess,
     VehicleAccess,
+    VehicleCategoryAccess,
     CreditAccountAccess,
     CreditLedgerAccess,
 )
+
+from .services import record_credit_payment, CreditLedgerError
 
 
 # CUSTOMER VIEWS
@@ -45,19 +54,62 @@ class CustomerDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated, CustomerAccess]
 
 
+# VEHICLE CATEGORY VIEWS
+
+class VehicleCategoryListCreateView(generics.ListCreateAPIView):
+    serializer_class = VehicleCategorySerializer
+    permission_classes = [IsAuthenticated, VehicleCategoryAccess]
+
+    def get_queryset(self):
+        return VehicleCategory.objects.filter(
+            is_active=True
+        ).order_by('name')
+
+
 # VEHICLE VIEWS
 
 class VehicleListCreateView(generics.ListCreateAPIView):
-    queryset = Vehicle.objects.select_related(
-        'customer', 'branch'
-    ).all()
     serializer_class = VehicleSerializer
     permission_classes = [IsAuthenticated, VehicleAccess]
+
+    def get_queryset(self):
+        queryset = Vehicle.objects.select_related(
+            'customer',
+            'branch',
+            'category',
+        ).all()
+
+        raw_search = self.request.query_params.get(
+            'search',
+            ''
+        ).strip()
+
+        if raw_search:
+            registration_search = ''.join(
+                raw_search.split()
+            ).upper()
+
+            queryset = queryset.annotate(
+                registration_compact=Replace(
+                    'registration_number',
+                    Value(' '),
+                    Value(''),
+                )
+            ).filter(
+                Q(
+                    registration_compact__icontains=registration_search
+                )
+                | Q(make_model__icontains=raw_search)
+            )
+
+        return queryset.order_by('registration_number')
 
 
 class VehicleDetailView(generics.RetrieveUpdateAPIView):
     queryset = Vehicle.objects.select_related(
-        'customer', 'branch'
+        'customer',
+        'branch',
+        'category',
     ).all()
     serializer_class = VehicleSerializer
     permission_classes = [IsAuthenticated, VehicleAccess]
@@ -71,7 +123,8 @@ class CreditAccountListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         return CreditAccount.objects.select_related(
-            'customer', 'approved_by'
+            'customer',
+            'approved_by',
         ).all()
 
 
@@ -81,7 +134,8 @@ class CreditAccountDetailView(generics.RetrieveUpdateAPIView):
 
     def get_queryset(self):
         return CreditAccount.objects.select_related(
-            'customer', 'approved_by'
+            'customer',
+            'approved_by',
         ).all()
 
 
@@ -105,7 +159,12 @@ class CreditAccountApproveView(APIView):
 
         if not account.customer.is_active:
             return Response(
-                {'detail': 'Cannot approve an account belonging to an inactive customer.'},
+                {
+                    'detail': (
+                        'Cannot approve an account belonging to '
+                        'an inactive customer.'
+                    )
+                },
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -189,6 +248,7 @@ class CreditAccountCloseView(APIView):
             status=status.HTTP_200_OK
         )
 
+
 # CREDIT LEDGER VIEWS
 
 class CreditAccountLedgerView(generics.ListAPIView):
@@ -216,7 +276,9 @@ class CreditAccountPaymentView(APIView):
                 account_id=pk,
                 amount=serializer.validated_data['amount'],
                 description=serializer.validated_data['description'],
-                idempotency_key=serializer.validated_data['idempotency_key'],
+                idempotency_key=serializer.validated_data[
+                    'idempotency_key'
+                ],
                 received_by=request.user,
                 reference_type=serializer.validated_data.get(
                     'reference_type', ''

@@ -7,7 +7,12 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from accounts.permissions import IsAdmin, IsSupervisor, IsDetailer
+from accounts.permissions import (
+    IsAdmin,
+    IsAdminOrOwner,
+    IsSupervisor,
+    IsDetailer,
+)
 
 from .models import Visit, VisitService, ServiceAssignment
 from .serializers import (
@@ -45,7 +50,7 @@ class VisitListCreateView(generics.ListCreateAPIView):
         if self.request.method == 'POST':
             return [
                 IsAuthenticated(),
-                (IsAdmin | IsSupervisor | IsDetailer)(),
+                (IsAdminOrOwner | IsSupervisor | IsDetailer)(),
             ]
 
         return super().get_permissions()
@@ -187,7 +192,6 @@ class ServiceAssignmentListCreateView(generics.ListCreateAPIView):
         staff = serializer.validated_data['staff']
         user = self.request.user
 
-        # Do not assign staff to a closed visit.
         if visit.status in [
             Visit.Status.COMPLETED,
             Visit.Status.CANCELLED,
@@ -196,7 +200,6 @@ class ServiceAssignmentListCreateView(generics.ListCreateAPIView):
                 "Staff cannot be assigned to a completed or cancelled visit."
             )
 
-        # Ensure the staff member is currently employed.
         if staff.employment_status != staff.EmploymentStatus.ACTIVE:
             raise ValidationError(
                 "Inactive or suspended staff cannot be assigned."
@@ -207,14 +210,11 @@ class ServiceAssignmentListCreateView(generics.ListCreateAPIView):
                 "This staff member's user account is inactive."
             )
 
-        # Staff must belong to the same branch as the visit.
         if staff.branch_id != visit.branch_id:
             raise ValidationError(
                 "Staff can only be assigned to visits at their own branch."
             )
 
-        # Car wash services require cleaners.
-        # Detailing services require detailers.
         if visit_service.service_category == 'CAR_WASH':
             expected_role = 'CLEANER'
         elif visit_service.service_category == 'DETAILING':
@@ -230,7 +230,6 @@ class ServiceAssignmentListCreateView(generics.ListCreateAPIView):
                 f"to this service."
             )
 
-        # Prevent duplicate active assignments.
         already_assigned = ServiceAssignment.objects.filter(
             visit_service=visit_service,
             staff=staff,
@@ -268,7 +267,6 @@ class ServiceAssignmentRemoveView(generics.GenericAPIView):
             visit_id=visit_id,
         )
 
-        # Restrict supervisors to their own branch.
         if not user.is_superuser and user.role not in ['ADMIN', 'OWNER']:
             if not hasattr(user, 'staff_profile'):
                 raise ValidationError(
@@ -291,7 +289,6 @@ class ServiceAssignmentRemoveView(generics.GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        # Soft removal preserves the assignment history.
         assignment.is_active = False
         assignment.removed_at = timezone.now()
         assignment.removed_by = user

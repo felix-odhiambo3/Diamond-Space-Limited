@@ -43,7 +43,10 @@ class Visit(models.Model):
     arrival_time = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
 
-    notes = models.TextField(blank=True)
+    plastic_mat_count = models.PositiveIntegerField(default=0)
+    woolen_mat_count = models.PositiveIntegerField(default=0)
+
+    comment = models.TextField(blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -114,6 +117,7 @@ class VisitService(models.Model):
 
     def __str__(self):
         return f"{self.service_name} - Visit #{self.visit_id}"
+
 
 class ServiceAssignment(models.Model):
     visit_service = models.ForeignKey(

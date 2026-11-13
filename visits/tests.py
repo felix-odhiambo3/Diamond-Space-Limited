@@ -22,7 +22,10 @@ class VisitWorkflowTests(APITestCase):
     def setUp(self):
         self.client = APIClient()
 
-        # Branches
+        # --------------------------------------------------
+        # BRANCHES
+        # --------------------------------------------------
+
         self.branch_a = Branch.objects.create(
             name="Kikuyu Branch",
             code="KIK",
@@ -35,7 +38,10 @@ class VisitWorkflowTests(APITestCase):
             town="Nairobi",
         )
 
-        # Users
+        # --------------------------------------------------
+        # USERS
+        # --------------------------------------------------
+
         self.admin = User.objects.create_user(
             username="visit_admin",
             email="visit_admin@example.com",
@@ -78,7 +84,10 @@ class VisitWorkflowTests(APITestCase):
             role=User.Role.CLEANER,
         )
 
-        # Staff profiles
+        # --------------------------------------------------
+        # STAFF PROFILES
+        # --------------------------------------------------
+
         self.supervisor_profile = StaffProfile.objects.create(
             user=self.supervisor,
             staff_number="SUP001",
@@ -114,7 +123,10 @@ class VisitWorkflowTests(APITestCase):
             date_joined=date(2026, 1, 1),
         )
 
-        # Vehicles
+        # --------------------------------------------------
+        # VEHICLES
+        # --------------------------------------------------
+
         self.vehicle = Vehicle.objects.create(
             registration_number="KDA123A",
             vehicle_type=Vehicle.VehicleType.SALOON,
@@ -127,7 +139,10 @@ class VisitWorkflowTests(APITestCase):
             branch=self.branch_b,
         )
 
-        # Services
+        # --------------------------------------------------
+        # SERVICES
+        # --------------------------------------------------
+
         self.car_wash = Service.objects.create(
             name="Full Car Wash",
             code="FULL-WASH",
@@ -144,8 +159,15 @@ class VisitWorkflowTests(APITestCase):
             duration_minutes=90,
         )
 
-        # URLs
+        # --------------------------------------------------
+        # URLS
+        # --------------------------------------------------
+
         self.visit_list_url = reverse("visit_list_create")
+
+    # --------------------------------------------------
+    # HELPER METHODS
+    # --------------------------------------------------
 
     def authenticate(self, user):
         self.client.force_authenticate(user=user)
@@ -200,19 +222,24 @@ class VisitWorkflowTests(APITestCase):
 
         response = self.client.post(
             self.visit_list_url,
-            {"vehicle": self.vehicle.pk},
+            {
+                "vehicle": self.vehicle.pk,
+                "branch": self.branch_a.pk,
+            },
             format="json",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(
-            Visit.objects.count(),
-            1,
+            response.status_code,
+            status.HTTP_201_CREATED,
         )
+
+        self.assertEqual(Visit.objects.count(), 1)
 
         visit = Visit.objects.get()
 
         self.assertEqual(visit.branch, self.branch_a)
+        self.assertEqual(visit.vehicle, self.vehicle)
         self.assertEqual(visit.checked_in_by, self.admin)
         self.assertEqual(
             visit.status,
@@ -227,7 +254,10 @@ class VisitWorkflowTests(APITestCase):
 
         response = self.client.post(
             self.visit_list_url,
-            {"vehicle": self.vehicle.pk},
+            {
+                "vehicle": self.vehicle.pk,
+                "branch": self.branch_a.pk,
+            },
             format="json",
         )
 
@@ -238,7 +268,7 @@ class VisitWorkflowTests(APITestCase):
 
         self.assertEqual(Visit.objects.count(), 0)
 
-    def test_detailer_cannot_check_in_vehicle_at_another_branch(self):
+    def test_detailer_can_check_in_vehicle_registered_at_another_branch(self):
         self.authenticate(self.detailer)
 
         response = self.client.post(
@@ -247,15 +277,29 @@ class VisitWorkflowTests(APITestCase):
             format="json",
         )
 
-        self.assertIn(
+        self.assertEqual(
             response.status_code,
-            [
-                status.HTTP_403_FORBIDDEN,
-                status.HTTP_404_NOT_FOUND,
-            ],
+            status.HTTP_201_CREATED,
         )
 
-        self.assertEqual(Visit.objects.count(), 0)
+        visit = Visit.objects.get()
+
+        # Vehicle registration branch remains unchanged.
+        self.assertEqual(
+            visit.vehicle.branch,
+            self.branch_b,
+        )
+
+        # Visit belongs to the detailer's assigned branch.
+        self.assertEqual(
+            visit.branch,
+            self.branch_a,
+        )
+
+        self.assertEqual(
+            visit.checked_in_by,
+            self.detailer,
+        )
 
     def test_cleaner_only_sees_visits_from_assigned_branch(self):
         local_visit = self.create_visit()
@@ -265,7 +309,10 @@ class VisitWorkflowTests(APITestCase):
 
         response = self.client.get(self.visit_list_url)
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
 
         returned_ids = {
             item["id"] for item in response.data

@@ -1,10 +1,10 @@
 
 from django.contrib import admin
-from .models import Customer, Vehicle, CreditAccount
 
 from .models import (
     Customer,
     Vehicle,
+    VehicleCategory,
     CreditAccount,
     CreditLedgerEntry,
     CreditPaymentAllocation,
@@ -19,7 +19,23 @@ class CustomerAdmin(admin.ModelAdmin):
         'email',
         'is_active',
     )
-    search_fields = ('full_name', 'phone_number', 'email')
+    search_fields = (
+        'full_name',
+        'phone_number',
+        'email',
+    )
+    list_filter = ('is_active',)
+
+
+@admin.register(VehicleCategory)
+class VehicleCategoryAdmin(admin.ModelAdmin):
+    list_display = (
+        'name',
+        'is_active',
+        'created_at',
+        'updated_at',
+    )
+    search_fields = ('name',)
     list_filter = ('is_active',)
 
 
@@ -27,6 +43,8 @@ class CustomerAdmin(admin.ModelAdmin):
 class VehicleAdmin(admin.ModelAdmin):
     list_display = (
         'registration_number',
+        'make_model',
+        'category',
         'vehicle_type',
         'customer',
         'branch',
@@ -34,10 +52,12 @@ class VehicleAdmin(admin.ModelAdmin):
     )
     search_fields = (
         'registration_number',
+        'make_model',
         'customer__full_name',
         'customer__phone_number',
     )
     list_filter = (
+        'category',
         'vehicle_type',
         'branch',
         'is_active',
@@ -68,10 +88,9 @@ class CreditAccountAdmin(admin.ModelAdmin):
         'created_at',
         'updated_at',
         'status',
-'approved_by',
-'approved_at',
+        'approved_by',
+        'approved_at',
     )
-
 
 
 @admin.register(CreditLedgerEntry)
@@ -85,19 +104,16 @@ class CreditLedgerEntryAdmin(admin.ModelAdmin):
         'created_by',
         'created_at',
     )
-
     list_filter = (
         'entry_type',
         'created_at',
     )
-
     search_fields = (
         'account__account_number',
         'account__customer__full_name',
         'idempotency_key',
         'reference_id',
     )
-
     readonly_fields = [
         field.name for field in CreditLedgerEntry._meta.fields
     ]
@@ -122,7 +138,6 @@ class CreditPaymentAllocationAdmin(admin.ModelAdmin):
         'allocated_by',
         'created_at',
     )
-
     readonly_fields = [
         field.name for field in CreditPaymentAllocation._meta.fields
     ]
@@ -135,4 +150,3 @@ class CreditPaymentAllocationAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
-

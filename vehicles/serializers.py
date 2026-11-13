@@ -6,6 +6,7 @@ from rest_framework import serializers
 from .models import (
     Customer,
     Vehicle,
+    VehicleCategory,
     CreditAccount,
     CreditLedgerEntry,
     CreditPaymentAllocation,
@@ -27,6 +28,33 @@ class CustomerSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
+class VehicleCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VehicleCategory
+        fields = [
+            'id',
+            'name',
+            'is_active',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'id',
+            'created_at',
+            'updated_at',
+        ]
+
+    def validate_name(self, value):
+        value = ' '.join(value.strip().split())
+
+        if not value:
+            raise serializers.ValidationError(
+                'Category name is required.'
+            )
+
+        return value
+
+
 class VehicleSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(
         source='customer.full_name',
@@ -38,11 +66,37 @@ class VehicleSerializer(serializers.ModelSerializer):
         read_only=True
     )
 
+    category_name = serializers.CharField(
+        source='category.name',
+        read_only=True
+    )
+
+    make_model = serializers.CharField(
+        required=True,
+        allow_blank=False,
+        max_length=100
+    )
+
+    category = serializers.PrimaryKeyRelatedField(
+        queryset=VehicleCategory.objects.filter(is_active=True),
+        required=True
+    )
+
+    # Kept writable temporarily for compatibility with older clients.
+    # If omitted, it is derived from the selected category.
+    vehicle_type = serializers.ChoiceField(
+        choices=Vehicle.VehicleType.choices,
+        required=False
+    )
+
     class Meta:
         model = Vehicle
         fields = [
             'id',
             'registration_number',
+            'make_model',
+            'category',
+            'category_name',
             'vehicle_type',
             'customer',
             'customer_name',
@@ -55,10 +109,76 @@ class VehicleSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id',
+            'created_at',
+            'updated_at',
+        ]
 
     def validate_registration_number(self, value):
-        return value.strip().upper()
+        normalized = ''.join(value.split()).upper()
+
+        if not normalized:
+            raise serializers.ValidationError(
+                'Vehicle registration number is required.'
+            )
+
+        vehicles = Vehicle.objects.all()
+
+        if self.instance is not None:
+            vehicles = vehicles.exclude(pk=self.instance.pk)
+
+        for vehicle in vehicles.only('pk', 'registration_number').iterator():
+            existing_normalized = ''.join(
+                vehicle.registration_number.split()
+            ).upper()
+
+            if existing_normalized == normalized:
+                raise serializers.ValidationError(
+                    'A vehicle with this registration number already exists.'
+                )
+
+        return normalized
+
+    def validate_make_model(self, value):
+        value = ' '.join(value.strip().split())
+
+        if not value:
+            raise serializers.ValidationError(
+                'Vehicle make/model is required.'
+            )
+
+        return value
+
+    def validate(self, attrs):
+        category = attrs.get(
+            'category',
+            getattr(self.instance, 'category', None)
+        )
+
+        if category is None:
+            raise serializers.ValidationError({
+                'category': 'Vehicle category is required.'
+            })
+
+        # Keep the old field consistent with the new category.
+        category_mapping = {
+            'saloon': Vehicle.VehicleType.SALOON,
+            'suv': Vehicle.VehicleType.SUV,
+            'pickup': Vehicle.VehicleType.PICKUP,
+            'van': Vehicle.VehicleType.VAN,
+            'truck': Vehicle.VehicleType.TRUCK,
+            'motorcycle': Vehicle.VehicleType.MOTORCYCLE,
+        }
+
+        derived_vehicle_type = category_mapping.get(
+            category.name.strip().casefold(),
+            Vehicle.VehicleType.OTHER
+        )
+
+        attrs['vehicle_type'] = derived_vehicle_type
+
+        return attrs
 
 
 class CreditAccountSerializer(serializers.ModelSerializer):

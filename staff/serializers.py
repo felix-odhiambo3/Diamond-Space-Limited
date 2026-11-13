@@ -1,4 +1,3 @@
-
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
@@ -6,34 +5,45 @@ from django.utils import timezone
 
 from rest_framework import serializers
 
-from .models import StaffProfile, ShiftAssignment
+from .models import (
+    StaffProfile,
+    ShiftAssignment,
+    StaffStatusHistory,
+)
 from .services import assign_staff_shift
-
 
 User = get_user_model()
 
 
 class StaffProfileSerializer(serializers.ModelSerializer):
+
     username = serializers.CharField(
         source='user.username',
         read_only=True
     )
+
     email = serializers.EmailField(
         source='user.email',
         read_only=True
     )
+
     role = serializers.CharField(
         source='user.role',
         read_only=True
     )
+
     full_name = serializers.SerializerMethodField()
+
     branch_name = serializers.CharField(
         source='branch.name',
         read_only=True
     )
 
+    current_shift = serializers.SerializerMethodField()
+
     class Meta:
         model = StaffProfile
+
         fields = [
             'id',
             'user',
@@ -47,9 +57,13 @@ class StaffProfileSerializer(serializers.ModelSerializer):
             'phone_number',
             'employment_status',
             'date_joined',
+            'current_shift',
+            'is_archived',
+            'archived_at',
             'created_at',
             'updated_at',
         ]
+
         read_only_fields = [
             'id',
             'user',
@@ -58,6 +72,9 @@ class StaffProfileSerializer(serializers.ModelSerializer):
             'role',
             'full_name',
             'branch_name',
+            'current_shift',
+            'is_archived',
+            'archived_at',
             'created_at',
             'updated_at',
         ]
@@ -65,8 +82,36 @@ class StaffProfileSerializer(serializers.ModelSerializer):
     def get_full_name(self, obj):
         return obj.user.get_full_name()
 
+    def get_current_shift(self, obj):
+        today = timezone.localdate()
+
+        assignments = obj.shift_assignments.all()
+
+        current_assignments = [
+            assignment
+            for assignment in assignments
+            if (
+                assignment.effective_from <= today
+                and (
+                    assignment.effective_to is None
+                    or assignment.effective_to >= today
+                )
+            )
+        ]
+
+        if not current_assignments:
+            return None
+
+        current_assignment = max(
+            current_assignments,
+            key=lambda assignment: assignment.effective_from
+        )
+
+        return current_assignment.shift
+
 
 class ShiftAssignmentSerializer(serializers.ModelSerializer):
+
     staff_number = serializers.CharField(
         source='staff.staff_number',
         read_only=True
@@ -74,6 +119,7 @@ class ShiftAssignmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ShiftAssignment
+
         fields = [
             'id',
             'staff',
@@ -85,6 +131,7 @@ class ShiftAssignmentSerializer(serializers.ModelSerializer):
             'reason',
             'created_at',
         ]
+
         read_only_fields = [
             'id',
             'changed_by',
@@ -93,9 +140,62 @@ class ShiftAssignmentSerializer(serializers.ModelSerializer):
         ]
 
 
-class StaffRegistrationSerializer(serializers.ModelSerializer):
-    username = serializers.CharField(write_only=True)
+class StaffStatusActionSerializer(serializers.Serializer):
 
+    action = serializers.ChoiceField(
+        choices=[
+            ('ACTIVATE', 'Activate'),
+            ('DEACTIVATE', 'Deactivate'),
+            ('SUSPEND', 'Suspend'),
+            ('ARCHIVE', 'Archive'),
+        ]
+    )
+
+    reason = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=2000
+    )
+
+    def validate(self, attrs):
+        action = attrs.get('action')
+        reason = attrs.get('reason', '').strip()
+
+        if action in ('SUSPEND', 'DEACTIVATE', 'ARCHIVE') and not reason:
+            raise serializers.ValidationError({
+                'reason': 'A reason is required for this action.'
+            })
+
+        attrs['reason'] = reason
+        return attrs
+
+
+class StaffStatusHistorySerializer(serializers.ModelSerializer):
+
+    performed_by_username = serializers.CharField(
+        source='performed_by.username',
+        read_only=True,
+        default=None
+    )
+
+    class Meta:
+        model = StaffStatusHistory
+
+        fields = [
+            'id',
+            'action',
+            'performed_by',
+            'performed_by_username',
+            'reason',
+            'created_at',
+        ]
+
+        read_only_fields = fields
+
+
+class StaffRegistrationSerializer(serializers.ModelSerializer):
+
+    username = serializers.CharField(write_only=True)
     email = serializers.EmailField(write_only=True)
 
     password = serializers.CharField(
@@ -131,6 +231,7 @@ class StaffRegistrationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StaffProfile
+
         fields = [
             'username',
             'email',
@@ -145,7 +246,6 @@ class StaffRegistrationSerializer(serializers.ModelSerializer):
             'date_joined',
         ]
 
-    # Validate username uniqueness
     def validate_username(self, value):
         if User.objects.filter(username=value).exists():
             raise serializers.ValidationError(
@@ -154,7 +254,6 @@ class StaffRegistrationSerializer(serializers.ModelSerializer):
 
         return value
 
-    # Validate email uniqueness
     def validate_email(self, value):
         if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError(
@@ -163,7 +262,6 @@ class StaffRegistrationSerializer(serializers.ModelSerializer):
 
         return value
 
-    # Validate staff number uniqueness
     def validate_staff_number(self, value):
         if StaffProfile.objects.filter(
             staff_number=value
@@ -174,7 +272,6 @@ class StaffRegistrationSerializer(serializers.ModelSerializer):
 
         return value
 
-    # Prevent future employment joining dates
     def validate_date_joined(self, value):
         if value > timezone.localdate():
             raise serializers.ValidationError(
@@ -183,7 +280,6 @@ class StaffRegistrationSerializer(serializers.ModelSerializer):
 
         return value
 
-    # Create user, staff profile and initial shift assignment
     def create(self, validated_data):
         shift = validated_data.pop('shift')
 
@@ -228,7 +324,6 @@ class StaffRegistrationSerializer(serializers.ModelSerializer):
 
         return staff
 
-    # Return the standard staff representation after registration
     def to_representation(self, instance):
         return StaffProfileSerializer(
             instance,
@@ -237,6 +332,7 @@ class StaffRegistrationSerializer(serializers.ModelSerializer):
 
 
 class ShiftChangeSerializer(serializers.Serializer):
+
     shift = serializers.ChoiceField(
         choices=ShiftAssignment.Shift.choices
     )

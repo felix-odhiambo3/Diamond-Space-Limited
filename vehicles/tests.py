@@ -7,12 +7,18 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from branches.models import Branch
+
 from .models import (
     Customer,
+    Vehicle,
+    VehicleCategory,
     CreditAccount,
     CreditLedgerEntry,
     CreditPaymentAllocation,
 )
+
+from .serializers import VehicleSerializer
+
 from .services import (
     CreditLedgerError,
     create_credit_charge,
@@ -26,27 +32,23 @@ User = get_user_model()
 class CreditLedgerServiceTests(TestCase):
 
     def setUp(self):
-        # Create a test administrator.
         self.user = User.objects.create_user(
             username='ledger_admin',
             password='TestPassword123!',
             email='ledger@example.com',
         )
 
-        # Create a test branch.
         self.branch = Branch.objects.create(
             name='Test Branch',
             code='TEST01',
             town='Kikuyu',
         )
 
-        # Create a test customer.
         self.customer = Customer.objects.create(
             full_name='Test Customer',
             phone_number='0712345678',
         )
 
-        # Create an active credit account.
         self.account = CreditAccount.objects.create(
             customer=self.customer,
             account_number='CR-TEST-001',
@@ -264,12 +266,9 @@ class CreditLedgerServiceTests(TestCase):
         with self.assertRaises(CreditLedgerError):
             self.record_payment('100.00', 'payment-006')
 
-    
     def test_reject_duplicate_charge_key_with_different_details(self):
-        # First transaction.
         first = self.create_charge('250.00', 'charge-011')
 
-        # Reuse the same key but change the description.
         with self.assertRaises(CreditLedgerError):
             create_credit_charge(
                 account_id=self.account.id,
@@ -281,7 +280,6 @@ class CreditLedgerServiceTests(TestCase):
                 reference_id='charge-011',
             )
 
-        # Only the original charge should exist.
         self.assertEqual(
             CreditLedgerEntry.objects.filter(
                 idempotency_key='charge-011'
@@ -295,13 +293,10 @@ class CreditLedgerServiceTests(TestCase):
         )
 
     def test_reject_duplicate_payment_key_with_different_details(self):
-        # Create an outstanding charge first.
         self.create_charge('500.00', 'charge-012')
 
-        # First repayment.
         first = self.record_payment('200.00', 'payment-007')
 
-        # Reuse the same key but change the description.
         with self.assertRaises(CreditLedgerError):
             record_credit_payment(
                 account_id=self.account.id,
@@ -313,7 +308,6 @@ class CreditLedgerServiceTests(TestCase):
                 reference_id='payment-007',
             )
 
-        # Only the original repayment should exist.
         self.assertEqual(
             CreditLedgerEntry.objects.filter(
                 idempotency_key='payment-007'
@@ -321,7 +315,6 @@ class CreditLedgerServiceTests(TestCase):
             1,
         )
 
-        # The original allocation must remain unchanged.
         self.assertEqual(
             CreditPaymentAllocation.objects.filter(
                 payment_entry=first
@@ -439,6 +432,7 @@ class CreditLedgerAPITests(TestCase):
         )
 
         self.account.refresh_from_db()
+
         self.assertEqual(
             self.account.outstanding_balance,
             Decimal('300.00'),
@@ -568,3 +562,426 @@ class CreditLedgerAPITests(TestCase):
             self.account.outstanding_balance,
             Decimal('500.00'),
         )
+
+
+class VehicleCategoryAPITests(TestCase):
+
+    def setUp(self):
+        self.client = APIClient()
+
+        self.admin = User.objects.create_user(
+            username='category_admin',
+            email='categoryadmin@example.com',
+            password='TestPassword123!',
+            role='ADMIN',
+        )
+
+        self.supervisor = User.objects.create_user(
+            username='category_supervisor',
+            email='categorysupervisor@example.com',
+            password='TestPassword123!',
+            role='SUPERVISOR',
+        )
+
+        self.owner = User.objects.create_user(
+            username='category_owner',
+            email='categoryowner@example.com',
+            password='TestPassword123!',
+            role='OWNER',
+        )
+
+        self.cleaner = User.objects.create_user(
+            username='category_cleaner',
+            email='categorycleaner@example.com',
+            password='TestPassword123!',
+            role='CLEANER',
+        )
+
+        self.detailer = User.objects.create_user(
+            username='category_detailer',
+            email='categorydetailer@example.com',
+            password='TestPassword123!',
+            role='DETAILER',
+        )
+
+        self.category_url = '/api/vehicles/categories/'
+
+    def authenticate(self, user):
+        self.client.force_authenticate(user=user)
+
+    def test_authenticated_user_can_list_active_categories(self):
+        active_category = VehicleCategory.objects.create(
+            name='SUV',
+            is_active=True,
+        )
+
+        VehicleCategory.objects.create(
+            name='Inactive Category',
+            is_active=False,
+        )
+
+        self.authenticate(self.cleaner)
+
+        response = self.client.get(self.category_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]['id'], active_category.id)
+        self.assertEqual(response.data[0]['name'], 'SUV')
+
+    def test_admin_can_create_category(self):
+        self.authenticate(self.admin)
+
+        response = self.client.post(
+            self.category_url,
+            {'name': '  Luxury   SUV  '},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        self.assertTrue(
+            VehicleCategory.objects.filter(
+                name='Luxury SUV'
+            ).exists()
+        )
+
+    def test_supervisor_can_create_category(self):
+        self.authenticate(self.supervisor)
+
+        response = self.client.post(
+            self.category_url,
+            {'name': 'Pickup'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        self.assertTrue(
+            VehicleCategory.objects.filter(
+                name='Pickup'
+            ).exists()
+        )
+
+    def test_owner_cannot_create_category(self):
+        self.authenticate(self.owner)
+
+        response = self.client.post(
+            self.category_url,
+            {'name': 'Owner Created Category'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+        self.assertFalse(
+            VehicleCategory.objects.filter(
+                name='Owner Created Category'
+            ).exists()
+        )
+
+    def test_cleaner_cannot_create_category(self):
+        self.authenticate(self.cleaner)
+
+        response = self.client.post(
+            self.category_url,
+            {'name': 'Cleaner Created Category'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+        self.assertFalse(
+            VehicleCategory.objects.filter(
+                name='Cleaner Created Category'
+            ).exists()
+        )
+
+    def test_detailer_cannot_create_category(self):
+        self.authenticate(self.detailer)
+
+        response = self.client.post(
+            self.category_url,
+            {'name': 'Detailer Created Category'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+        self.assertFalse(
+            VehicleCategory.objects.filter(
+                name='Detailer Created Category'
+            ).exists()
+        )
+
+    def test_duplicate_category_name_is_rejected(self):
+        VehicleCategory.objects.create(name='SUV')
+
+        self.authenticate(self.admin)
+
+        response = self.client.post(
+            self.category_url,
+            {'name': 'SUV'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+        self.assertEqual(
+            VehicleCategory.objects.filter(name='SUV').count(),
+            1,
+        )
+
+    def test_blank_category_name_is_rejected(self):
+        self.authenticate(self.admin)
+
+        response = self.client.post(
+            self.category_url,
+            {'name': '   '},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+        self.assertEqual(VehicleCategory.objects.count(), 0)
+
+
+class VehicleRegistrationNormalizationTests(TestCase):
+
+    def setUp(self):
+        self.branch = Branch.objects.create(
+            name='Registration Test Branch',
+            code='REGTEST01',
+            town='Kikuyu',
+        )
+
+        self.category = VehicleCategory.objects.create(
+            name='SUV',
+            is_active=True,
+        )
+
+    def create_vehicle(self, registration_number):
+        return Vehicle.objects.create(
+            registration_number=registration_number,
+            make_model='Toyota Harrier',
+            category=self.category,
+            vehicle_type=Vehicle.VehicleType.SUV,
+            branch=self.branch,
+        )
+
+    def test_model_save_removes_spaces_and_uppercases_registration(self):
+        vehicle = self.create_vehicle('kda 123a')
+
+        vehicle.refresh_from_db()
+
+        self.assertEqual(
+            vehicle.registration_number,
+            'KDA123A',
+        )
+
+    def test_model_save_removes_multiple_whitespace_characters(self):
+        vehicle = self.create_vehicle('  kdb   456b  ')
+
+        vehicle.refresh_from_db()
+
+        self.assertEqual(
+            vehicle.registration_number,
+            'KDB456B',
+        )
+
+    def test_serializer_normalizes_registration_number(self):
+        serializer = VehicleSerializer(data={
+            'registration_number': 'kdc 789a',
+            'make_model': 'Toyota Prado',
+            'category': self.category.pk,
+            'branch': self.branch.pk,
+        })
+
+        self.assertTrue(
+            serializer.is_valid(),
+            serializer.errors,
+        )
+
+        self.assertEqual(
+            serializer.validated_data['registration_number'],
+            'KDC789A',
+        )
+
+        vehicle = serializer.save()
+
+        vehicle.refresh_from_db()
+
+        self.assertEqual(
+            vehicle.registration_number,
+            'KDC789A',
+        )
+
+    def test_serializer_rejects_duplicate_with_different_spacing_and_case(self):
+        self.create_vehicle('KDA123A')
+
+        serializer = VehicleSerializer(data={
+            'registration_number': 'kda 123a',
+            'make_model': 'Toyota Harrier',
+            'category': self.category.pk,
+            'branch': self.branch.pk,
+        })
+
+        self.assertFalse(serializer.is_valid())
+
+        self.assertIn(
+            'registration_number',
+            serializer.errors,
+        )
+
+    def test_serializer_allows_unchanged_registration_on_update(self):
+        vehicle = self.create_vehicle('KDA 123A')
+
+        serializer = VehicleSerializer(
+            instance=vehicle,
+            data={
+                'registration_number': 'kda 123a',
+                'make_model': 'Toyota Harrier',
+                'category': self.category.pk,
+                'branch': self.branch.pk,
+            },
+        )
+
+        self.assertTrue(
+            serializer.is_valid(),
+            serializer.errors,
+        )
+
+        updated_vehicle = serializer.save()
+
+        self.assertEqual(
+            updated_vehicle.registration_number,
+            'KDA123A',
+        )
+
+
+class VehicleSearchAPITests(TestCase):
+
+    def setUp(self):
+        self.client = APIClient()
+
+        self.user = User.objects.create_user(
+            username='vehicle_search_user',
+            email='vehiclesearch@example.com',
+            password='TestPassword123!',
+            role='CLEANER',
+        )
+
+        self.branch = Branch.objects.create(
+            name='Vehicle Search Branch',
+            code='VSEARCH01',
+            town='Kikuyu',
+        )
+
+        self.category = VehicleCategory.objects.create(
+            name='SUV',
+            is_active=True,
+        )
+
+        self.vehicle = Vehicle.objects.create(
+            registration_number='KDA 123A',
+            make_model='Toyota Harrier',
+            category=self.category,
+            vehicle_type=Vehicle.VehicleType.SUV,
+            branch=self.branch,
+        )
+
+        self.second_vehicle = Vehicle.objects.create(
+            registration_number='KDB 456B',
+            make_model='Nissan X-Trail',
+            category=self.category,
+            vehicle_type=Vehicle.VehicleType.SUV,
+            branch=self.branch,
+        )
+
+        self.vehicle_url = '/api/vehicles/'
+
+        self.client.force_authenticate(user=self.user)
+
+    def test_search_finds_vehicle_by_registration_without_spaces(self):
+        response = self.client.get(
+            self.vehicle_url,
+            {'search': 'KDA123A'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(
+            response.data[0]['registration_number'],
+            'KDA123A',
+        )
+
+    def test_search_finds_vehicle_by_registration_with_spaces(self):
+        response = self.client.get(
+            self.vehicle_url,
+            {'search': 'KDA 123A'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(
+            response.data[0]['registration_number'],
+            'KDA123A',
+        )
+
+    def test_search_finds_vehicle_by_lowercase_registration_with_spaces(self):
+        response = self.client.get(
+            self.vehicle_url,
+            {'search': 'kda 123a'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(
+            response.data[0]['registration_number'],
+            'KDA123A',
+        )
+
+    def test_search_finds_vehicle_by_partial_registration(self):
+        response = self.client.get(
+            self.vehicle_url,
+            {'search': 'KDA'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(
+            response.data[0]['id'],
+            self.vehicle.id,
+        )
+
+    def test_search_finds_vehicle_by_make_model(self):
+        response = self.client.get(
+            self.vehicle_url,
+            {'search': 'Toyota'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(
+            response.data[0]['id'],
+            self.vehicle.id,
+        )
+
+    def test_search_finds_vehicle_by_partial_model(self):
+        response = self.client.get(
+            self.vehicle_url,
+            {'search': 'X-Trail'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(
+            response.data[0]['id'],
+            self.second_vehicle.id,
+        )
+
+    def test_empty_search_returns_all_vehicles(self):
+        response = self.client.get(self.vehicle_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 2)
